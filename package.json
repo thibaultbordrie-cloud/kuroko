@@ -10,7 +10,7 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^22.20.7",
+    "@types/node": "^26.6.6",
     "esbuild": "^0.25.10",
     "typescript": "^5.9.3"
   },
