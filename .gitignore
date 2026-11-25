@@ -1,0 +1,6 @@
+node_modules/
+build/
+dist/
+*.kuroko
+# Private content packs never enter this repository.
+packs/private/
