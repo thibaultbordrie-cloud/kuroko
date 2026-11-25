@@ -1,0 +1,156 @@
+// Pack de démonstration public. Court, sans contenu sexuel. Sert à montrer le format.
+@pack
+titre: Dernier train
+version: 1
+age: 16
+themes: tension
+debut: quai
+init: calme = 2; soupcon = 0
+
+@perso inconnue
+noms: Aoi | Rin | Misaki | Hina
+
+@perso coursier
+noms: M. Ishida | M. Kuroda | M. Mori
+
+@scene quai
+vue: proche
+lieu: quai
+tension: 1
+---
+Quai 3, 23 h 52. {coursier} te tend un sac en papier d'une pharmacie qui a fermé il y a dix ans. Le sac pèse plus lourd qu'un médicament.
+
+« Kyoto. Sortie nord. Quelqu'un te reconnaîtra. » Il regarde les rails, pas toi. « Ne l'ouvre pas. Ce n'est pas une règle, c'est un conseil. »
+
+Le dernier train entre en gare sans bruit.
+
+> Monter en tête de train, près du conducteur
+  effets: calme += 1
+> Monter en queue, là où il n'y a personne
+  effets: soupcon += 1
+> Lui demander ce qu'il y a dedans
+  jet: calme
+  10+: savoir = 1
+  7-9: savoir = 1; soupcon += 1
+  6-: soupcon += 2
+
+@scene voisine
+lieu: wagon
+tension: 1
+quand: tour >= 1
+---
+{inconnue} s'assoit en face de toi alors que tout le wagon est vide. Elle a un parapluie sec et des chaussures mouillées.
+
+« Tu vas loin ? » Elle sourit au sac, pas à toi.
+
+> Mentir : « Juste deux arrêts. »
+  jet: calme
+  10+: calme += 1
+  7-9: soupcon += 1
+  6-: soupcon += 2; elle_sait = 1
+> Ne rien dire, regarder par la fenêtre
+  effets: soupcon += 1
+> Lui retourner la question
+  effets: elle_parle = 1
+
+@scene vibration
+lieu: wagon
+tension: 2
+quand: tour >= 1
+---
+Le sac vibre. Une fois, longtemps, comme un téléphone posé sur une table. Puis plus rien.
+
+Au fond du wagon, quelqu'un tourne une page de journal, très lentement.
+
+> Ouvrir le sac
+  effets: ouvert = 1; soupcon += 1
+> Le poser sous le siège et changer de place
+  effets: calme -= 1
+> Ne pas bouger
+  jet: calme
+  10+: calme += 1
+  7-9: rien
+  6-: soupcon += 1
+
+@scene controle
+lieu: wagon
+tension: 1
+quand: tour >= 2
+---
+Le contrôleur arrive, casquette trop grande, carnet à la main. Il ne regarde pas ton billet. Il regarde le sac.
+
+« C'est à vous ? »
+
+> « Oui. Des médicaments pour ma mère. »
+  jet: calme
+  10+: rien
+  7-9: soupcon += 1
+  6-: soupcon += 2
+> « Non. Quelqu'un l'a laissé là. »
+  effets: abandonne = 1; soupcon -= 1
+> Lui tendre un billet de mille yens plié en quatre
+  effets: soupcon += 1; achete = 1
+
+@scene tunnel
+lieu: tunnel
+urgent: oui
+tension: 3
+quand: soupcon >= 3
+---
+Les lumières s'éteignent entre deux gares. Dans le noir, une main se pose sur le sac, sans forcer, comme on prend la main de quelqu'un.
+
+> Tirer le sac vers toi
+  jet: calme
+  10+: soupcon = 1
+  7-9: soupcon = 2; abime = 1
+  6-: perdu = 1
+> Lâcher
+  effets: perdu = 1
+
+@scene arret
+lieu: gare
+tension: -1
+quand: tour >= 2
+---
+Takatsuki. Les portes s'ouvrent sur un quai vide et un distributeur qui ronronne. Personne ne monte. Le chef de gare siffle, mais le train ne repart pas encore.
+
+> Descendre ici et disparaître avec le sac
+  effets: garde = 1; fin garde
+> Rester assis
+  effets: calme += 1
+> Descendre, jeter le sac dans la poubelle du quai, remonter
+  effets: abandonne = 1; calme += 1
+
+@scene kyoto
+lieu: kyoto
+urgent: oui
+tension: 2
+quand: tour >= 5
+---
+Kyoto, sortie nord. Minuit passé. Les taxis dorment. Sous l'horloge, quelqu'un lève la tête vers toi : c'est {inconnue}.
+
+« Tu ne l'as pas ouvert », dit-elle. Ce n'est pas une question.
+
+> Lui donner le sac
+  si: non perdu et non abandonne
+  effets: fin livre
+> « Je l'ai perdu. »
+  si: perdu ou abandonne
+  effets: fin pris
+> Partir sans rien dire
+  effets: fin garde
+
+@fin livre
+titre: Livré
+---
+Elle prend le sac sans le regarder. Le lendemain, tu ne trouves rien aux informations. C'est sans doute ça, un travail bien fait.
+
+@fin garde
+titre: Gardé
+---
+Le sac est sous ton lit. Il n'a plus jamais vibré. Tu n'as jamais su si c'était une bonne nouvelle.
+
+@fin pris
+titre: Perdu
+---
+Elle hoche la tête, comme si c'était prévu. Trois semaines plus tard, {coursier} ne répond plus au numéro qu'il t'avait laissé.

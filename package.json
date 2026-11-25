@@ -1,0 +1,22 @@
+{
+  "name": "kuroko",
+  "version": "0.1.0",
+  "description": "Narrative spy game engine: conditional scenes, procedural director, 2d6 rolls, sealed content packs, offline web app.",
+  "scripts": {
+    "test": "node build.mjs test && node --test build/test/*.mjs",
+    "typecheck": "tsc -p .",
+    "build": "node build.mjs page && node build.mjs site",
+    "check-pack": "node build.mjs tools && node build/kpack.mjs check"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.7",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.3"
+  },
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
+}
