@@ -27,7 +27,7 @@ jobs:
       - run: npm run build
       - run: node build/kpack.mjs check packs/dernier-train.txt
       - if: github.event_name == 'push'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: dist/site
 
