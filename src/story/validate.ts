@@ -6,7 +6,7 @@
 import { Rng } from "../core/rng.js";
 import { readsOf, type Effect } from "./expr.js";
 import type { Pack } from "./pack.js";
-import { Story } from "./story.js";
+import { Story, randomHero } from "./story.js";
 
 export interface Report {
   readonly errors: string[];
@@ -19,7 +19,7 @@ export interface Report {
   readonly beats: { readonly min: number; readonly median: number; readonly max: number };
 }
 
-const BUILTIN = new Set(["tour", "tension"]);
+const BUILTIN = new Set(["tour", "tension", "fem", "attire"]);
 
 export function validate(pack: Pack, runs = 400, maxBeats = 800): Report {
   const errors: string[] = [];
@@ -46,12 +46,13 @@ export function validate(pack: Pack, runs = 400, maxBeats = 800): Report {
     }
   };
   effects(pack.init, "init");
+  for (const o of [...(pack.creation?.origins ?? []), ...(pack.creation?.flaws ?? [])]) effects(o.effects, `option ${o.id}`);
   for (const s of pack.scenes) {
     const at = `scène ${s.id} (ligne ${s.line})`;
     if (s.when) for (const v of readsOf(s.when)) read.set(v, at);
-    for (const m of s.text.matchAll(/\{([\p{L}_][\p{L}\p{N}_.]*)\}/gu)) {
+    for (const m of s.text.matchAll(/\{\??([\p{L}_][\p{L}\p{N}_.]*)[}:]/gu)) {
       const k = m[1] as string;
-      if (!personas.has(k)) read.set(k, at);
+      if (!personas.has(k) && k !== "moi") read.set(k, at);
     }
     for (const c of s.choices) {
       const cat = `${at}, choix « ${c.text} » (ligne ${c.line})`;
@@ -64,7 +65,7 @@ export function validate(pack: Pack, runs = 400, maxBeats = 800): Report {
     }
   }
   for (const [v, where] of read) {
-    if (BUILTIN.has(v) || v.startsWith("vu.") || written.has(v)) continue;
+    if (BUILTIN.has(v) || v.startsWith("vu.") || v.startsWith("origine.") || v.startsWith("faille.") || v.endsWith(".fem") || written.has(v) || pack.creation?.traits.includes(v)) continue;
     warnings.push(`${where} : « ${v} » est lu mais jamais modifié (il vaudra toujours 0)`);
   }
   for (const s of pack.scenes) {
@@ -81,7 +82,7 @@ export function validate(pack: Pack, runs = 400, maxBeats = 800): Report {
   const stuckSamples: string[] = [];
   if (errors.length === 0) {
     for (let r = 0; r < runs; r++) {
-      const st = new Story(pack, `v${r}`);
+      const st = new Story(pack, `v${r}`, [], randomHero(pack, rng));
       while (st.scene && st.beat < maxBeats) {
         const offers = st.offers();
         if (offers.length === 0) break;
@@ -104,7 +105,7 @@ export function validate(pack: Pack, runs = 400, maxBeats = 800): Report {
     for (const theme of themes) {
       let blocked = 0;
       for (let r = 0; r < Math.min(60, runs); r++) {
-        const st = new Story(pack, `l${theme}${r}`, [theme]);
+        const st = new Story(pack, `l${theme}${r}`, [theme], randomHero(pack, rng));
         while (st.scene && st.beat < maxBeats) {
           const offers = st.offers();
           if (offers.length === 0) break;

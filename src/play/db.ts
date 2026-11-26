@@ -2,6 +2,8 @@
  * The player's packs and saves live in this browser only (IndexedDB). Nothing is ever sent
  * anywhere. Every call is guarded: a private window or blocked storage just means "nothing kept".
  */
+import type { Hero } from "../story/story.js";
+
 const DB = "kuroko";
 const VERSION = 1;
 
@@ -23,6 +25,8 @@ export interface StoredSave {
   readonly log: readonly (number | readonly string[])[];
   readonly updated: number;
   readonly ended?: string;
+  /** The character the player made, when the pack asks for one. */
+  readonly hero?: Hero;
 }
 
 let opening: Promise<IDBDatabase | null> | null = null;

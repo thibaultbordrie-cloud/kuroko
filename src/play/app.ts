@@ -1,13 +1,14 @@
 /**
- * The reader: a library of packs, a page of story, and the player's own settings.
- * Text from packs is only ever placed with textContent; packs are data, never markup.
+ * The reader: a library of packs, a character to make, a page of story at night, and the
+ * player's own settings. Text from packs is only ever placed with textContent; packs are data.
  */
 import { Rng, seedCode } from "../core/rng.js";
 import { clear, h, store } from "../ui/dom.js";
-import { PackError, parsePack, type Pack, type Scene } from "../story/pack.js";
+import { PackError, parsePack, type Creation, type Option, type Pack, type Scene } from "../story/pack.js";
 import { unseal } from "../story/seal.js";
-import { Story } from "../story/story.js";
+import { Story, heroError, randomHero, type Hero } from "../story/story.js";
 import { validate } from "../story/validate.js";
+import { Plate, Soundscape, kindOf } from "./ambiance.js";
 import { db, type StoredPack } from "./db.js";
 
 type Level = "montre" | "voile" | "ligne";
@@ -15,6 +16,8 @@ interface Settings {
   themes: Record<string, Level>;
   size: number;
   reduced: boolean;
+  sound: boolean;
+  paper: boolean;
 }
 
 const SETTINGS_KEY = "kuroko.reader.v1";
@@ -22,6 +25,8 @@ const SETTINGS_KEY = "kuroko.reader.v1";
 const CAPPED = new Set(["suicide", "automutilation", "violence-sexuelle"]);
 const DEFAULTS: Record<string, Level> = { torture: "voile", interrogatoire: "voile", suicide: "voile", automutilation: "voile", "violence-sexuelle": "voile" };
 const VIEW_LABEL: Record<string, string> = { proche: "", dossier: "Dossier", miroir: "Miroir" };
+const NAMES_F = ["Aiko", "Mio", "Rina", "Sayaka", "Yuna", "Léa", "Nora", "Inès", "Maya", "Hana"];
+const NAMES_M = ["Ren", "Kaito", "Daichi", "Shun", "Sôta", "Hugo", "Malo", "Elias", "Noé", "Jin"];
 
 function label(theme: string): string {
   const t = theme.replace(/[-_]/g, " ");
@@ -48,8 +53,37 @@ function inline(text: string): Node[] {
   return out;
 }
 
-function paragraphs(text: string): HTMLElement[] {
+const MSG = /^\*\*([^*]+)\*\*\s*(?:\(([^)]{1,30})\))?\s*:\s*(.+)$/;
+const LOG = /^\[[^\]]{1,24}\]/;
+
+/**
+ * Prose becomes paragraphs; a block where every line is "**Name** : text" becomes a phone
+ * thread; a block of "[time] …" lines becomes a terminal; "# Title" becomes a file heading.
+ */
+function blocks(text: string, me: string): HTMLElement[] {
   return text.split(/\n{2,}/).filter((p) => p.trim()).map((p) => {
+    const lines = p.split("\n").filter((l) => l.trim());
+    if (lines.length > 0 && lines.every((l) => MSG.test(l.trim()))) {
+      const thread = h("div", { class: "phone", role: "log", "aria-label": "Messages" });
+      for (const l of lines) {
+        const m = MSG.exec(l.trim()) as RegExpExecArray;
+        const who = (m[1] as string).trim();
+        const mine = /^(toi|moi)$/i.test(who) || (me !== "" && who === me);
+        thread.append(h("div", { class: `bubble${mine ? " mine" : ""}` },
+          mine ? null : h("span", { class: "who" }, who, m[2] ? h("span", { class: "when" }, ` · ${m[2]}`) : null),
+          h("span", null, ...inline(m[3] as string))));
+      }
+      return thread;
+    }
+    if (lines.length > 0 && lines.every((l) => LOG.test(l.trim()))) {
+      return h("pre", { class: "term" }, lines.map((l) => l.trim()).join("\n"));
+    }
+    if (lines.length === 1 && /^#\s+/.test(lines[0] as string)) {
+      return h("h2", { class: "file-title" }, (lines[0] as string).replace(/^#\s+/, ""));
+    }
+    if (lines.length === 1 && /^\*\*[^*]+\*\*$/.test((lines[0] as string).trim())) {
+      return h("h2", { class: "file-title" }, (lines[0] as string).trim().slice(2, -2));
+    }
     const el = h("p");
     p.split("\n").forEach((line, i) => {
       if (i > 0) el.append(h("br"));
@@ -59,7 +93,40 @@ function paragraphs(text: string): HTMLElement[] {
   });
 }
 
+/** Staggers the arrival of each block of a page. */
+function stagger(els: HTMLElement[], on: boolean): HTMLElement[] {
+  if (on) els.forEach((e, i) => { e.classList.add("arrive"); e.style.setProperty("--i", String(i)); });
+  return els;
+}
+
 const pct = (x: number) => `${Math.round(x * 100)} %`;
+
+/** Preview of creation texts, before a Story exists: gender agreements and the name only. */
+function preview(text: string, d: Draft): string {
+  return text
+    .replace(/\{\?(fem|attire):([^|}]*)\|([^}]*)\}/g, (_, v: string, a: string, b: string) => ((v === "fem" ? d.fem : d.attire) ? a : b))
+    .replace(/\{moi\}/g, d.name || "toi")
+    .replace(/\{\?[^}]*\}|\{[^}]*\}/g, "");
+}
+
+/** Pips on a die face, read left to right, top to bottom on a 3×3 grid. */
+const PIPS: Record<number, number[]> = { 1: [4], 2: [0, 8], 3: [0, 4, 8], 4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8] };
+function die(face: number): HTMLElement {
+  const d = h("span", { class: "die", "aria-hidden": "true" });
+  for (let i = 0; i < 9; i++) d.append(h("i", { class: (PIPS[face] ?? []).includes(i) ? "on" : "" }));
+  return d;
+}
+
+interface Draft {
+  step: number;
+  name: string;
+  fem: 0 | 1;
+  attire: 0 | 1;
+  origin: string;
+  flaw: string;
+  traits: Record<string, number>;
+  error: string;
+}
 
 export class Player {
   private settings: Settings;
@@ -71,6 +138,9 @@ export class Player {
   private message = "";
   /** The lines in force when this game began: part of the save, so the replay is exact. */
   private startLines: string[] = [];
+  private draft: Draft | null = null;
+  private plate: Plate | null = null;
+  private readonly sound = new Soundscape();
 
   constructor(private readonly root: HTMLElement, private readonly builtin: readonly string[]) {
     let saved: Partial<Settings> | null = null;
@@ -83,8 +153,20 @@ export class Player {
       themes: saved?.themes && typeof saved.themes === "object" ? saved.themes : {},
       size: typeof saved?.size === "number" ? Math.max(0, Math.min(3, saved.size)) : 1,
       reduced: typeof saved?.reduced === "boolean" ? saved.reduced : (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false),
+      sound: saved?.sound === true,
+      paper: saved?.paper === true,
     };
     this.applyLook();
+    // Browsers only let sound start after a gesture: the first touch brings it back.
+    if (this.settings.sound) {
+      const wake = () => {
+        this.sound.enable(this.settings.sound);
+        window.removeEventListener("pointerdown", wake);
+        window.removeEventListener("keydown", wake);
+      };
+      window.addEventListener("pointerdown", wake);
+      window.addEventListener("keydown", wake);
+    }
   }
 
   async start(): Promise<void> {
@@ -106,8 +188,11 @@ export class Player {
   }
 
   private applyLook(): void {
-    document.documentElement.dataset.size = String(this.settings.size);
-    document.documentElement.dataset.motion = this.settings.reduced ? "reduced" : "full";
+    const d = document.documentElement;
+    d.dataset.size = String(this.settings.size);
+    d.dataset.motion = this.settings.reduced ? "reduced" : "full";
+    d.dataset.theme = this.settings.paper ? "light" : "night";
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", this.settings.paper ? "#e9ecef" : "#07080c");
   }
 
   private level(theme: string): Level {
@@ -125,24 +210,53 @@ export class Player {
   }
 
   private mount(...els: HTMLElement[]): void {
+    this.plate?.stop();
+    this.plate = null;
     clear(this.root);
     for (const e of els) this.root.append(e);
     window.scrollTo(0, 0);
+  }
+
+  /** A painted, living plate at the top of a page. */
+  private paint(canvas: HTMLCanvasElement, place: string, mood: string, seed: string, cold: boolean): void {
+    const kind = kindOf(place, mood);
+    this.plate = new Plate(canvas, kind, seed, this.settings.reduced, cold);
+    this.sound.set(kind);
+  }
+
+  private soundButton(): HTMLElement {
+    return h("button", {
+      class: "btn quiet sound",
+      "aria-pressed": String(this.settings.sound),
+      "aria-label": this.settings.sound ? "Couper le son" : "Mettre le son",
+      on: {
+        click: (e: Event) => {
+          this.settings.sound = !this.settings.sound;
+          this.saveSettings();
+          this.sound.enable(this.settings.sound);
+          const b = e.currentTarget as HTMLElement;
+          b.setAttribute("aria-pressed", String(this.settings.sound));
+          b.setAttribute("aria-label", this.settings.sound ? "Couper le son" : "Mettre le son");
+          b.textContent = this.settings.sound ? "Son ●" : "Son ○";
+        },
+      },
+    }, this.settings.sound ? "Son ●" : "Son ○");
   }
 
   // ======================= Library =======================
 
   async home(): Promise<void> {
     this.story = null;
+    this.draft = null;
     this.packs = (await db.packs()).sort((a, b) => Number(!!b.builtin) - Number(!!a.builtin) || b.added - a.added);
     const list = h("div", { class: "packs" });
     for (const p of this.packs) {
       const save = await db.save(p.id);
       const going = save && !save.ended;
-      const row = h("article", { class: "pack" },
+      const row = h("article", { class: `pack${p.age >= 18 ? " adult" : ""}` },
         h("div", { class: "pack-head" },
           h("h2", null, p.title),
-          h("p", { class: "meta" }, `${p.age}+`, p.builtin ? " · inclus" : "", p.themes.length ? ` · ${p.themes.map(label).join(", ")}` : ""),
+          h("p", { class: "meta" }, `${p.age}+`, p.builtin ? " · inclus" : "", going && save?.hero ? ` · partie de ${save.hero.name} en cours` : going ? " · partie en cours" : ""),
         ),
         h("div", { class: "row" },
           going ? h("button", { class: "btn primary", on: { click: () => void this.play(p, false) } }, "Continuer") : null,
@@ -182,10 +296,18 @@ export class Player {
       : null;
     const msg = this.message ? h("p", { class: "message", role: "status" }, this.message) : null;
     this.message = "";
+    const canvas = h("canvas", { class: "plate-canvas", "aria-hidden": "true" });
     this.mount(
       h("header", { class: "top" },
         h("div", { class: "brand" }, h("span", { class: "kanji", "aria-hidden": "true" }, "黒子"), h("span", null, "KUROKO")),
-        h("button", { class: "btn quiet", on: { click: () => this.showSettings() } }, "Réglages"),
+        h("div", { class: "row tight" }, this.soundButton(), h("button", { class: "btn quiet", on: { click: () => this.showSettings() } }, "Réglages")),
+      ),
+      h("div", { class: "hero-plate" },
+        canvas,
+        h("div", { class: "hero-text" },
+          h("p", { class: "kanji-big", "aria-hidden": "true" }, "黒子"),
+          h("p", { class: "tagline" }, "Celui qu'on ne voit pas sur scène."),
+        ),
       ),
       h("main", { class: "page" },
         msg,
@@ -198,6 +320,7 @@ export class Player {
         ),
       ),
     );
+    this.paint(canvas, "rue", "rue", "home", false);
   }
 
   private async importFile(f: File): Promise<void> {
@@ -244,7 +367,7 @@ export class Player {
       const save = fresh ? null : await db.save(p.id);
       if (save && !save.ended) {
         try {
-          this.story = Story.replay(parsed, save.seed, save.log, save.lines);
+          this.story = Story.replay(parsed, save.seed, save.log, save.lines, save.hero ?? null);
           this.startLines = [...save.lines];
         } catch {
           this.message = "La partie enregistrée ne se rejoue plus avec cette version du pack. Une nouvelle partie commence.";
@@ -252,15 +375,28 @@ export class Player {
         }
       }
       if (!this.story) {
-        this.startLines = this.lines(parsed.themes);
-        this.story = new Story(parsed, freshSeed(), this.startLines);
-        await this.persist();
+        if (parsed.creation) {
+          this.create(parsed.creation);
+          return;
+        }
+        await this.begin(null);
+        return;
       }
       this.render(false);
     } catch (e) {
       this.message = `Impossible d'ouvrir ce pack : ${e instanceof Error ? e.message : "erreur"}.`;
       await this.home();
     }
+  }
+
+  private async begin(hero: Hero | null): Promise<void> {
+    const p = this.pack;
+    if (!p) return;
+    this.startLines = this.lines(p.parsed.themes);
+    this.story = new Story(p.parsed, freshSeed(), this.startLines, hero);
+    this.draft = null;
+    await this.persist();
+    this.render(true);
   }
 
   private async persist(): Promise<void> {
@@ -273,6 +409,7 @@ export class Player {
       lines: this.startLines,
       log: s.log.slice(),
       updated: Date.now(),
+      ...(s.hero ? { hero: s.hero } : {}),
       ...(s.ending ? { ended: s.ending.id } : {}),
     });
   }
@@ -284,36 +421,55 @@ export class Player {
     this.render(true);
   }
 
+  private topBar(): HTMLElement {
+    const p = this.pack;
+    const s = this.story;
+    return h("header", { class: "top" },
+      h("button", { class: "btn quiet", on: { click: () => void this.home() } }, "Packs"),
+      h("span", { class: "where" }, p?.parsed.title ?? ""),
+      h("div", { class: "row tight" },
+        this.soundButton(),
+        s?.hero ? h("button", { class: "btn quiet", on: { click: () => this.showSheet() } }, "Toi") : null,
+        h("button", { class: "btn quiet", on: { click: () => this.showSettings() } }, "Réglages"),
+      ),
+    );
+  }
+
   private render(animate: boolean): void {
     const s = this.story;
     const p = this.pack;
     if (!s || !p) return;
-    const top = h("header", { class: "top" },
-      h("button", { class: "btn quiet", on: { click: () => void this.home() } }, "Packs"),
-      h("span", { class: "where" }, p.parsed.title),
-      h("button", { class: "btn quiet", on: { click: () => this.showSettings() } }, "Réglages"),
-    );
-    const page = h("main", { class: `page reading${animate && !this.settings.reduced ? " enter" : ""}` });
+    const motion = animate && !this.settings.reduced;
+    const page = h("main", { class: "page reading" });
     if (this.message) {
       page.append(h("p", { class: "message", role: "status" }, this.message));
       this.message = "";
     }
     const last = s.last;
+    let dice: HTMLElement | null = null;
     if (last) {
-      const echo = h("div", { class: "echo" }, h("p", { class: "chose" }, last.choice.text));
+      const echo = h("div", { class: "echo" }, h("p", { class: "chose" }, s.render(last.choice.text)));
       if (last.roll) {
         const r = last.roll;
-        const word = r.band === "hit" ? "réussite" : r.band === "partial" ? "réussite, à un prix" : "ça tourne mal";
-        echo.append(h("p", { class: `roll ${r.band}` }, `2d6 : ${r.dice[0]} + ${r.dice[1]}${r.bonus ? ` ${r.bonus > 0 ? "+" : "−"} ${Math.abs(r.bonus)}` : ""} = ${r.total} · ${word}`));
+        const word = r.band === "hit" ? "Réussite" : r.band === "partial" ? "Réussite, à un prix" : "Ça tourne mal";
+        dice = h("div", { class: `dice ${r.band}` }, die(r.dice[0]), die(r.dice[1]),
+          h("span", { class: "roll" }, `${r.bonus ? `${r.bonus > 0 ? "+" : "−"}${Math.abs(r.bonus)} ` : ""}= ${r.total}`),
+          h("span", { class: "verdict" }, word));
+        dice.setAttribute("role", "img");
+        dice.setAttribute("aria-label", `Deux dés : ${r.dice[0]} et ${r.dice[1]}, total ${r.total}. ${word}.`);
+        echo.append(dice);
       }
       page.append(echo);
     }
+    let canvas: HTMLCanvasElement | null = null;
+    let scene: Scene | null = null;
     if (s.ending) {
+      canvas = h("canvas", { class: "plate-canvas", "aria-hidden": "true" });
       page.append(
         h("article", { class: "ending", tabindex: "-1" },
-          h("p", { class: "eyebrow" }, "Fin"),
-          h("h1", null, s.ending.title),
-          ...paragraphs(s.render(s.ending.text)),
+          h("div", { class: "plate" }, canvas, h("p", { class: "plate-label" }, "Fin")),
+          h("h1", null, s.render(s.ending.title)),
+          ...stagger(blocks(s.render(s.ending.text), s.hero?.name ?? ""), motion),
           h("p", { class: "meta" }, `${s.beat} choix · ${new Set(s.history).size} scènes vues`),
           h("div", { class: "row" },
             h("button", { class: "btn primary", on: { click: () => void this.play(p.stored, true) } }, "Nouvelle partie"),
@@ -322,7 +478,9 @@ export class Player {
         ),
       );
     } else if (s.scene) {
-      page.append(this.sceneView(s, s.scene));
+      scene = s.scene;
+      canvas = h("canvas", { class: "plate-canvas", "aria-hidden": "true" });
+      page.append(this.sceneView(s, s.scene, canvas, motion));
     } else {
       page.append(
         h("article", { class: "ending" },
@@ -332,25 +490,235 @@ export class Player {
         ),
       );
     }
-    this.mount(top, page);
+    this.mount(this.topBar(), page);
+    if (canvas) {
+      if (scene) this.paint(canvas, scene.place, scene.mood, `${s.seed}/${scene.id}`, scene.view === "miroir");
+      else this.paint(canvas, "rue", "riviere", `${s.seed}/fin`, true);
+    }
+    if (dice && motion) this.tumble(dice, last?.roll?.dice ?? [1, 1]);
     (page.querySelector("article") as HTMLElement | null)?.focus({ preventScroll: true });
   }
 
-  private sceneView(s: Story, scene: Scene): HTMLElement {
+  /** The dice roll on screen for a moment, then land on what the story already decided. */
+  private tumble(el: HTMLElement, faces: readonly [number, number]): void {
+    el.classList.add("rolling");
+    const dies = Array.from(el.querySelectorAll<HTMLElement>(".die"));
+    let n = 0;
+    const id = window.setInterval(() => {
+      n++;
+      const done = n >= 9;
+      dies.forEach((d, i) => {
+        const f = done ? (faces[i] ?? 1) : 1 + Math.floor(Math.random() * 6);
+        d.replaceWith(die(f));
+      });
+      dies.splice(0, dies.length, ...Array.from(el.querySelectorAll<HTMLElement>(".die")));
+      if (done) {
+        window.clearInterval(id);
+        el.classList.remove("rolling");
+        el.classList.add("landed");
+      }
+    }, 70);
+  }
+
+  private sceneView(s: Story, scene: Scene, canvas: HTMLCanvasElement, motion: boolean): HTMLElement {
     const art = h("article", { class: `scene view-${scene.view}`, tabindex: "-1", "aria-label": "Scène" });
     const eyebrow = [VIEW_LABEL[scene.view], scene.place].filter(Boolean).join(" · ");
-    if (eyebrow) art.append(h("p", { class: "eyebrow" }, eyebrow));
-    art.append(...paragraphs(s.text(scene, this.veils())));
+    art.append(h("div", { class: "plate" }, canvas, eyebrow ? h("p", { class: "plate-label" }, eyebrow) : null));
+    const body = blocks(s.text(scene, this.veils()), s.hero?.name ?? "");
+    if (scene.view === "dossier") {
+      art.append(h("div", { class: "file" }, h("span", { class: "stamp", "aria-hidden": "true" }, "機密"), ...stagger(body, motion)));
+    } else {
+      art.append(...stagger(body, motion));
+    }
     const choices = h("div", { class: "choices", role: "group", "aria-label": "Choix" });
-    for (const o of s.offers()) {
-      const b = h("button", { class: "choice", on: { click: () => this.choose(o.index) } }, h("span", { class: "c-text" }, ...inline(s.render(o.choice.text))));
+    const offers = s.offers();
+    offers.forEach((o, i) => {
+      const b = h("button", { class: `choice${o.odds ? " risky" : ""}`, on: { click: () => this.choose(o.index) } },
+        h("span", { class: "c-num", "aria-hidden": "true" }, String(i + 1)),
+        h("span", { class: "c-text" }, ...inline(s.render(o.choice.text))));
       if (o.odds) {
-        b.append(h("span", { class: "c-odds" }, `Jet : ${o.choice.rollLabel} · 10+ ${pct(o.odds.hit)} · 7+ ${pct(o.odds.partial)}`));
+        const bar = h("span", { class: "odds-bar", "aria-hidden": "true" }, h("i", { class: "hit" }), h("i", { class: "part" }));
+        (bar.children[0] as HTMLElement).style.setProperty("width", pct(o.odds.hit).replace(" ", ""));
+        (bar.children[1] as HTMLElement).style.setProperty("width", pct(o.odds.partial - o.odds.hit).replace(" ", ""));
+        b.append(h("span", { class: "c-odds" }, bar, h("span", null, `${o.choice.rollLabel || "Jet"} · net ${pct(o.odds.hit)} · en tout ${pct(o.odds.partial)}`)));
       }
       choices.append(b);
+    });
+    if (motion) {
+      choices.classList.add("arrive");
+      choices.style.setProperty("--i", String(Math.min(body.length, 8)));
     }
     art.append(choices);
     return art;
+  }
+
+  // ======================= Character =======================
+
+  private create(c: Creation): void {
+    if (!this.draft) {
+      this.draft = { step: 0, name: "", fem: 1, attire: 0, origin: "", flaw: "", traits: Object.fromEntries(c.traits.map((t) => [t, 0])), error: "" };
+    }
+    const d = this.draft;
+    const steps = ["Qui", "D'où", "Talents", "Faille", "Toi"];
+    const progress = h("ol", { class: "steps", "aria-label": "Étapes" },
+      ...steps.map((t, i) => h("li", { class: i === d.step ? "now" : i < d.step ? "done" : "", "aria-current": i === d.step ? "step" : null }, t)));
+    const canvas = h("canvas", { class: "plate-canvas", "aria-hidden": "true" });
+    const body = h("section", { class: "create" });
+    const used = c.traits.reduce((a, t) => a + (d.traits[t] ?? 0), 0);
+    const go = (step: number) => {
+      d.step = step;
+      d.error = "";
+      this.create(c);
+    };
+    const next = (ok: boolean, why: string) => h("button", {
+      class: "btn primary",
+      on: { click: () => { if (ok) go(d.step + 1); else { d.error = why; this.create(c); } } },
+    }, "Suivant");
+    const back = d.step > 0 ? h("button", { class: "btn quiet", on: { click: () => go(d.step - 1) } }, "Retour") : null;
+
+    switch (d.step) {
+      case 0: {
+        const input = h("input", { id: "hero-name", class: "field", type: "text", maxlength: "24", autocomplete: "off", spellcheck: "false", value: d.name, placeholder: "Ton prénom" }) as HTMLInputElement;
+        input.addEventListener("input", () => { d.name = input.value; });
+        const seg = (title: string, cur: 0 | 1, a: string, b: string, set: (v: 0 | 1) => void) =>
+          h("div", { class: "pick" }, h("span", { class: "pick-label" }, title),
+            h("div", { class: "seg", role: "radiogroup", "aria-label": title },
+              h("button", { class: "seg-btn", role: "radio", "aria-checked": String(cur === 1), on: { click: () => { set(1); this.create(c); } } }, a),
+              h("button", { class: "seg-btn", role: "radio", "aria-checked": String(cur === 0), on: { click: () => { set(0); this.create(c); } } }, b)));
+        body.append(
+          h("h1", { class: "title" }, "Qui es-tu, cette nuit ?"),
+          h("label", { class: "pick-label", for: "hero-name" }, "Prénom"),
+          h("div", { class: "row" }, input, h("button", { class: "btn", on: { click: () => { const pool = d.fem ? NAMES_F : NAMES_M; d.name = pool[Math.floor(Math.random() * pool.length)] as string; this.create(c); } } }, "Au hasard")),
+          seg("Tu es", d.fem, "une femme", "un homme", (v) => { d.fem = v; }),
+          seg("Tu es attiré" + (d.fem ? "e" : "") + " par", d.attire, "les femmes", "les hommes", (v) => { d.attire = v; }),
+          h("p", { class: "meta" }, "Ces choix changent le texte, les accords et certaines personnes que tu croiseras."),
+        );
+        body.append(h("div", { class: "row" },
+          h("button", { class: "btn primary", on: { click: () => { d.name = (input.value || "").trim(); if (/^[\p{L}][\p{L}' -]{0,23}$/u.test(d.name)) go(1); else { d.error = "Un prénom : des lettres, et au plus 24."; this.create(c); } } } }, "Suivant"),
+          h("button", { class: "btn quiet", on: { click: () => this.randomize(c) } }, "Tout au hasard"),
+        ));
+        break;
+      }
+      case 1:
+      case 3: {
+        const flaw = d.step === 3;
+        const list = flaw ? c.flaws : c.origins;
+        const cur = flaw ? d.flaw : d.origin;
+        body.append(h("h1", { class: "title" }, flaw ? "Ce qui te perdra" : "D'où tu viens"));
+        if (flaw) body.append(h("p", { class: "meta" }, "Une faille ouvre des portes que la prudence garde fermées. Elle coûte, aussi."));
+        const cards = h("div", { class: "cards", role: "radiogroup", "aria-label": flaw ? "Faille" : "Origine" });
+        for (const o of list) cards.append(this.optionCard(o, cur === o.id, d, () => { if (flaw) d.flaw = o.id; else d.origin = o.id; d.error = ""; this.create(c); }));
+        body.append(cards, h("div", { class: "row" }, back, next(cur !== "", flaw ? "Choisis une faille." : "Choisis une origine.")));
+        break;
+      }
+      case 2: {
+        body.append(h("h1", { class: "title" }, "Ce que tu sais faire"),
+          h("p", { class: "meta" }, `Répartis ${c.points} points, ${c.max} au plus par talent. Chaque point s'ajoute aux dés quand ce talent est en jeu.`),
+          h("p", { class: `left${used === c.points ? " full" : ""}`, role: "status" }, `${c.points - used} point${c.points - used > 1 ? "s" : ""} à placer`));
+        const grid = h("div", { class: "traits" });
+        for (const t of c.traits) {
+          const v = d.traits[t] ?? 0;
+          const about = c.about.find((a) => a.id === t);
+          const pips = h("span", { class: "pips", "aria-hidden": "true" }, ...Array.from({ length: c.max }, (_, i) => h("i", { class: i < v ? "on" : "" })));
+          grid.append(h("div", { class: "trait" },
+            h("div", { class: "trait-head" },
+              h("span", { class: "trait-name" }, about?.title ?? label(t)),
+              h("div", { class: "stepper" },
+                h("button", { class: "btn round", "aria-label": `Retirer un point à ${about?.title ?? t}`, disabled: v <= 0, on: { click: () => { d.traits[t] = v - 1; this.create(c); } } }, "−"),
+                pips,
+                h("span", { class: "sr" }, String(v)),
+                h("button", { class: "btn round", "aria-label": `Ajouter un point à ${about?.title ?? t}`, disabled: v >= c.max || used >= c.points, on: { click: () => { d.traits[t] = v + 1; this.create(c); } } }, "+"),
+              )),
+            about?.text ? h("p", { class: "meta" }, preview(about.text, d)) : null));
+        }
+        body.append(grid, h("div", { class: "row" }, back, next(used === c.points, `Il reste ${c.points - used} point(s) à placer.`)));
+        break;
+      }
+      default: {
+        const hero = this.heroOf(d);
+        const err = this.pack ? heroError(this.pack.parsed, hero) : null;
+        const origin = c.origins.find((o) => o.id === d.origin);
+        const flaw = c.flaws.find((o) => o.id === d.flaw);
+        body.append(h("h1", { class: "title" }, "Ton dossier"), this.sheet(c, hero, origin, flaw));
+        if (err) body.append(h("p", { class: "message", role: "alert" }, err));
+        body.append(
+          h("div", { class: "row" }, back, h("button", { class: "btn primary big", disabled: !!err, on: { click: () => void this.begin(hero) } }, "Entrer dans la nuit")));
+      }
+    }
+    if (d.error) body.prepend(h("p", { class: "message", role: "alert" }, d.error));
+    this.mount(
+      h("header", { class: "top" },
+        h("button", { class: "btn quiet", on: { click: () => void this.home() } }, "Packs"),
+        h("span", { class: "where" }, this.pack?.parsed.title ?? ""),
+        this.soundButton(),
+      ),
+      h("div", { class: "plate slim" }, canvas, h("p", { class: "plate-label" }, "Création")),
+      h("main", { class: "page" }, progress, body),
+    );
+    this.paint(canvas, "", "chambre", `creation/${d.step}`, d.step === 3);
+    (body.querySelector(".title") as HTMLElement | null)?.setAttribute("tabindex", "-1");
+    (body.querySelector(".title") as HTMLElement | null)?.focus({ preventScroll: true });
+  }
+
+  private optionCard(o: Option, on: boolean, d: Draft, pick: () => void): HTMLElement {
+    return h("button", { class: `card${on ? " on" : ""}`, role: "radio", "aria-checked": String(on), on: { click: pick } },
+      h("span", { class: "card-title" }, preview(o.title, d)),
+      o.text ? h("span", { class: "card-text" }, preview(o.text, d)) : null);
+  }
+
+  private heroOf(d: Draft): Hero {
+    return { name: d.name.trim(), fem: d.fem, attire: d.attire, origin: d.origin, flaw: d.flaw, traits: { ...d.traits } };
+  }
+
+  private randomize(c: Creation): void {
+    const a = new Uint32Array(1);
+    crypto.getRandomValues(a);
+    const rng = new Rng(`hero-${a[0]}`);
+    const r = this.pack ? randomHero(this.pack.parsed, rng) : null;
+    if (!r) return;
+    const pool = r.fem ? NAMES_F : NAMES_M;
+    this.draft = { step: 4, name: rng.pick(pool), fem: r.fem, attire: r.attire, origin: r.origin, flaw: r.flaw, traits: { ...r.traits }, error: "" };
+    this.create(c);
+  }
+
+  /** The character as a file: name, origin, flaw, talents. */
+  private sheet(c: Creation, hero: Hero, origin: Option | undefined, flaw: Option | undefined): HTMLElement {
+    const d: Draft = { step: 0, name: hero.name, fem: hero.fem, attire: hero.attire, origin: hero.origin, flaw: hero.flaw, traits: { ...hero.traits }, error: "" };
+    return h("div", { class: "file sheet" },
+      h("span", { class: "stamp", "aria-hidden": "true" }, "黒子"),
+      h("p", { class: "sheet-name" }, hero.name),
+      h("p", { class: "meta" }, `${hero.fem ? "Femme" : "Homme"} · attiré${hero.fem ? "e" : ""} par ${hero.attire ? "les femmes" : "les hommes"}`),
+      h("dl", { class: "sheet-list" },
+        h("dt", null, "Origine"), h("dd", null, origin ? preview(origin.title, d) : "—"),
+        h("dt", null, "Faille"), h("dd", null, flaw ? preview(flaw.title, d) : "—"),
+      ),
+      h("div", { class: "traits compact" },
+        ...c.traits.map((t) => {
+          const v = hero.traits[t] ?? 0;
+          const about = c.about.find((a) => a.id === t);
+          return h("div", { class: "trait-head" },
+            h("span", { class: "trait-name" }, about?.title ?? label(t)),
+            h("span", { class: "pips", role: "img", "aria-label": `${v} sur ${c.max}` }, ...Array.from({ length: c.max }, (_, i) => h("i", { class: i < v ? "on" : "" }))));
+        })),
+    );
+  }
+
+  private showSheet(): void {
+    const s = this.story;
+    const c = this.pack?.parsed.creation;
+    if (!s?.hero || !c) return;
+    const hero = s.hero;
+    this.mount(
+      h("header", { class: "top" },
+        h("button", { class: "btn quiet", on: { click: () => this.render(false) } }, "Retour"),
+        h("span", { class: "where" }, "Toi"),
+        h("span"),
+      ),
+      h("main", { class: "page" },
+        this.sheet(c, hero, c.origins.find((o) => o.id === hero.origin), c.flaws.find((o) => o.id === hero.flaw)),
+        h("p", { class: "meta" }, `${s.beat} choix faits · ${new Set(s.history).size} scènes vues`),
+      ),
+    );
   }
 
   // ======================= Settings =======================
@@ -369,7 +737,9 @@ export class Player {
       }
       rows.append(h("div", { class: "theme" }, h("span", null, label(t)), group));
     }
-    const back = () => (this.story ? this.render(false) : void this.home());
+    const back = () => (this.story ? this.render(false) : this.draft && this.pack?.parsed.creation ? this.create(this.pack.parsed.creation) : void this.home());
+    const toggle = (name: string, on: boolean, flip: () => void) =>
+      h("button", { class: "btn", "aria-pressed": String(on), on: { click: () => { flip(); this.saveSettings(); this.showSettings(); } } }, name);
     this.mount(
       h("header", { class: "top" },
         h("button", { class: "btn quiet", on: { click: back } }, "Retour"),
@@ -387,7 +757,8 @@ export class Player {
           h("div", { class: "row" },
             h("button", { class: "btn", disabled: this.settings.size <= 0, on: { click: () => { this.settings.size--; this.saveSettings(); this.showSettings(); } } }, "Texte plus petit"),
             h("button", { class: "btn", disabled: this.settings.size >= 3, on: { click: () => { this.settings.size++; this.saveSettings(); this.showSettings(); } } }, "Texte plus grand"),
-            h("button", { class: "btn", "aria-pressed": String(this.settings.reduced), on: { click: () => { this.settings.reduced = !this.settings.reduced; this.saveSettings(); this.showSettings(); } } }, "Mouvement réduit"),
+            toggle("Mouvement réduit", this.settings.reduced, () => { this.settings.reduced = !this.settings.reduced; }),
+            toggle("Page claire", this.settings.paper, () => { this.settings.paper = !this.settings.paper; }),
           ),
         ),
       ),

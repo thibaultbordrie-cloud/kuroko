@@ -202,3 +202,84 @@ test("lines remove scenes for good; veils swap a passage for its off-screen vers
   assert.deepEqual(r.history, t.history);
   assert.ok(!t.history.slice(2).includes("bar"));
 });
+
+const HERO_PACK = `
+@pack
+titre: Héros
+debut: a
+creation: oui
+points: 4
+traits: charme, calme
+trait-max: 3
+
+@origine actrice
+titre: Actrice
+effets: charme += 1
+---
+Des pièces que personne n'a vues.
+
+@origine voleuse
+titre: Pickpocket
+---
+Namba.
+
+@faille dette
+titre: Une dette
+effets: dette = 1
+---
+On t'attend.
+
+@perso double
+genre: joueur
+noms-f: Hana
+noms-m: Kenji
+
+@perso aime
+genre: attirance
+noms-f: Aya
+noms-m: Ren
+
+@scene a
+---
+{moi}, tu es arrivé{?fem:e|}. {double} te ressemble. {aime} t'attend, {?aime.fem:elle|lui}.
+> Jet
+  jet: charme
+  10+: fin f
+  7-9: fin f
+  6-: fin f
+
+@fin f
+titre: Fin
+---
+Fin.
+`;
+
+test("character creation: names, agreements and gendered personas follow the hero; bad heroes are refused", () => {
+  const p = parsePack(HERO_PACK);
+  const hero = { name: "Léa", fem: 1 as const, attire: 0 as const, origin: "actrice", flaw: "dette", traits: { charme: 3, calme: 1 } };
+  const s = new Story(p, "h", [], hero);
+  assert.equal(s.text(s.scene as never), "Léa, tu es arrivée. Hana te ressemble. Ren t'attend, lui.");
+  assert.equal(s.get("charme"), 4, "origin effects add to the chosen points");
+  assert.equal(s.get("dette"), 1);
+  assert.equal(s.offers()[0]?.odds?.hit, chanceAtLeast(4, 10));
+  const m = new Story(p, "h", [], { ...hero, name: "Kaito", fem: 0, attire: 1 });
+  assert.equal(m.text(m.scene as never), "Kaito, tu es arrivé. Kenji te ressemble. Aya t'attend, elle.");
+  assert.throws(() => new Story(p, "h", [], { ...hero, traits: { charme: 3, calme: 3 } }), /répartir exactement 4/);
+  assert.throws(() => new Story(p, "h", [], { ...hero, name: "<script>" }), /prénom invalide/);
+  assert.throws(() => new Story(p, "h", [], { ...hero, origin: "nope" }), /origine inconnue/);
+  const r = Story.replay(p, "h", [0], [], hero);
+  assert.equal(r.ending?.id, "f");
+  assert.deepEqual(validate(p, 50).errors, []);
+  // Conditionals nest, innermost first.
+  assert.equal(s.render("{?dette:Tu dois, {?fem:elle|il} le sait.|rien}"), "Tu dois, elle le sait.");
+  assert.equal(m.render("{?dette:Tu dois, {?fem:elle|il} le sait.|rien}"), "Tu dois, il le sait.");
+});
+
+test("trait descriptions and scene ambiance are read, and unknown values refused", () => {
+  const p = parsePack(HERO_PACK.replace("@origine actrice", "@trait charme\ntitre: Charme\n---\nPlaire.\n\n@origine actrice"));
+  assert.equal(p.creation?.about[0]?.title, "Charme");
+  assert.throws(() => parsePack(HERO_PACK.replace("@origine actrice", "@trait vol\ntitre: Vol\n\n@origine actrice")), /pas dans la liste/);
+  const a = parsePack("@pack\ntitre: t\ndebut: s\n\n@scene s\nambiance: port\n---\nx\n> y\n  effets: fin f\n\n@fin f\ntitre: f\n---\nz");
+  assert.equal(a.scenes[0]?.mood, "port");
+  assert.throws(() => parsePack("@pack\ntitre: t\ndebut: s\n\n@scene s\nambiance: lune\n---\nx\n> y\n  effets: fin f\n\n@fin f\ntitre: f\n---\nz"), /ambiance inconnue/);
+});

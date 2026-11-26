@@ -1,24 +1,76 @@
 // Pack de démonstration public. Court, sans contenu sexuel. Sert à montrer le format.
 @pack
 titre: Dernier train
-version: 1
+version: 2
 age: 16
 themes: tension
 debut: quai
-init: calme = 2; soupcon = 0
+init: soupcon = 0
+creation: oui
+traits: calme, flair, bagout
+points: 4
+trait-max: 3
+
+@trait calme
+titre: Sang-froid
+---
+Garder la voix posée et les mains immobiles quand tout pousse à fuir.
+
+@trait flair
+titre: Flair
+---
+Voir le détail qui cloche avant qu'il ne te voie.
+
+@trait bagout
+titre: Bagout
+---
+Faire dire oui à quelqu'un qui voulait dire non.
+
+@origine livreur
+titre: Livreu{?fem:se|r} de nuit
+effets: flair += 1
+---
+Tu connais chaque gare de la ligne et les visages qui reviennent. Les colis, tu ne les ouvres jamais.
+
+@origine etudiant
+titre: Étudiant{?fem:e|} fauché{?fem:e|}
+effets: bagout += 1
+---
+Un loyer en retard, un sourire qui marche encore. Ce soir, c'est 30 000 yens pour un aller simple.
+
+@origine ancien
+titre: Ancien{?fem:ne|} du milieu
+effets: calme += 1
+---
+Tu avais arrêté. Le coursier le sait. C'est pour ça qu'il t'a choisi{?fem:e|}.
+
+@faille curieux
+titre: Curiosité
+effets: flair += 1; calme -= 1
+---
+Un sac fermé, c'est une question. Tu n'as jamais su laisser une question sans réponse.
+
+@faille dette
+titre: Une dette
+effets: soupcon += 1; bagout += 1
+---
+Quelqu'un attend cet argent plus que toi. Tu as déjà promis.
 
 @perso inconnue
-noms: Aoi | Rin | Misaki | Hina
+genre: attirance
+noms-f: Aoi | Rin | Misaki | Hina
+noms-m: Sora | Kei | Haruto | Ryo
 
 @perso coursier
 noms: M. Ishida | M. Kuroda | M. Mori
 
 @scene quai
 vue: proche
-lieu: quai
+lieu: quai 3
+ambiance: train
 tension: 1
 ---
-Quai 3, 23 h 52. {coursier} te tend un sac en papier d'une pharmacie qui a fermé il y a dix ans. Le sac pèse plus lourd qu'un médicament.
+Quai 3, 23 h 52. {moi}, tu es en avance{?faille.curieux: et le sac t'intrigue déjà|}. {coursier} te tend un sac en papier d'une pharmacie qui a fermé il y a dix ans. Le sac pèse plus lourd qu'un médicament.
 
 « Kyoto. Sortie nord. Quelqu'un te reconnaîtra. » Il regarde les rails, pas toi. « Ne l'ouvre pas. Ce n'est pas une règle, c'est un conseil. »
 
@@ -29,22 +81,23 @@ Le dernier train entre en gare sans bruit.
 > Monter en queue, là où il n'y a personne
   effets: soupcon += 1
 > Lui demander ce qu'il y a dedans
-  jet: calme
+  jet: bagout
   10+: savoir = 1
   7-9: savoir = 1; soupcon += 1
   6-: soupcon += 2
 
 @scene voisine
 lieu: wagon
+ambiance: train
 tension: 1
 quand: tour >= 1
 ---
-{inconnue} s'assoit en face de toi alors que tout le wagon est vide. Elle a un parapluie sec et des chaussures mouillées.
+{inconnue} s'assoit en face de toi alors que tout le wagon est vide. {?inconnue.fem:Elle|Il} a un parapluie sec et des chaussures mouillées.
 
-« Tu vas loin ? » Elle sourit au sac, pas à toi.
+« Tu vas loin ? » {?inconnue.fem:Elle|Il} sourit au sac, pas à toi.
 
 > Mentir : « Juste deux arrêts. »
-  jet: calme
+  jet: bagout
   10+: calme += 1
   7-9: soupcon += 1
   6-: soupcon += 2; elle_sait = 1
@@ -55,6 +108,7 @@ quand: tour >= 1
 
 @scene vibration
 lieu: wagon
+ambiance: train
 tension: 2
 quand: tour >= 1
 ---
@@ -66,6 +120,11 @@ Au fond du wagon, quelqu'un tourne une page de journal, très lentement.
   effets: ouvert = 1; soupcon += 1
 > Le poser sous le siège et changer de place
   effets: calme -= 1
+> Écouter : d'où vient le bruit du journal ?
+  jet: flair
+  10+: calme += 1; savoir = 1
+  7-9: rien
+  6-: soupcon += 1
 > Ne pas bouger
   jet: calme
   10+: calme += 1
@@ -74,6 +133,7 @@ Au fond du wagon, quelqu'un tourne une page de journal, très lentement.
 
 @scene controle
 lieu: wagon
+ambiance: train
 tension: 1
 quand: tour >= 2
 ---
@@ -93,6 +153,7 @@ Le contrôleur arrive, casquette trop grande, carnet à la main. Il ne regarde p
 
 @scene tunnel
 lieu: tunnel
+ambiance: train
 urgent: oui
 tension: 3
 quand: soupcon >= 3
@@ -108,7 +169,8 @@ Les lumières s'éteignent entre deux gares. Dans le noir, une main se pose sur 
   effets: perdu = 1
 
 @scene arret
-lieu: gare
+lieu: Takatsuki
+ambiance: rue
 tension: -1
 quand: tour >= 2
 ---
@@ -122,14 +184,15 @@ Takatsuki. Les portes s'ouvrent sur un quai vide et un distributeur qui ronronne
   effets: abandonne = 1; calme += 1
 
 @scene kyoto
-lieu: kyoto
+lieu: Kyoto, sortie nord
+ambiance: rue
 urgent: oui
 tension: 2
 quand: tour >= 5
 ---
 Kyoto, sortie nord. Minuit passé. Les taxis dorment. Sous l'horloge, quelqu'un lève la tête vers toi : c'est {inconnue}.
 
-« Tu ne l'as pas ouvert », dit-elle. Ce n'est pas une question.
+« Tu ne l'as pas ouvert », dit-{?inconnue.fem:elle|il}. Ce n'est pas une question.
 
 > Lui donner le sac
   si: non perdu et non abandonne
@@ -143,7 +206,7 @@ Kyoto, sortie nord. Minuit passé. Les taxis dorment. Sous l'horloge, quelqu'un 
 @fin livre
 titre: Livré
 ---
-Elle prend le sac sans le regarder. Le lendemain, tu ne trouves rien aux informations. C'est sans doute ça, un travail bien fait.
+{?inconnue.fem:Elle|Il} prend le sac sans le regarder. Le lendemain, tu ne trouves rien aux informations. C'est sans doute ça, un travail bien fait.
 
 @fin garde
 titre: Gardé
@@ -153,4 +216,4 @@ Le sac est sous ton lit. Il n'a plus jamais vibré. Tu n'as jamais su si c'étai
 @fin pris
 titre: Perdu
 ---
-Elle hoche la tête, comme si c'était prévu. Trois semaines plus tard, {coursier} ne répond plus au numéro qu'il t'avait laissé.
+{?inconnue.fem:Elle|Il} hoche la tête, comme si c'était prévu. Trois semaines plus tard, {coursier} ne répond plus au numéro qu'il t'avait laissé.

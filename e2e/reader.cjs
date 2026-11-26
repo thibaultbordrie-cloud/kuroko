@@ -24,13 +24,44 @@ const server = http.createServer((req, res) => {
   await page.screenshot({ path: `${shots}/reader-1-home.png` });
   await page.getByRole("button", { name: "Nouvelle partie" }).first().click();
   await page.waitForTimeout(700);
+  // Character creation: name, gender, origin, points, flaw, then the file.
+  await page.screenshot({ path: `${shots}/reader-c1-who.png` });
+  await page.getByRole("button", { name: "Suivant" }).click();
+  await page.waitForTimeout(200);
+  if (!(await page.locator(".message").count())) errors.push("creation: empty name accepted");
+  await page.fill("#hero-name", "Léa");
+  await page.getByRole("radio", { name: "les femmes" }).click();
+  await page.getByRole("button", { name: "Suivant" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".card").nth(1).click();
+  await page.screenshot({ path: `${shots}/reader-c2-origin.png` });
+  await page.getByRole("button", { name: "Suivant" }).click();
+  await page.waitForTimeout(300);
+  for (let i = 0; i < 4; i++) await page.locator(".trait button[aria-label^='Ajouter']").nth(i % 3).click();
+  await page.screenshot({ path: `${shots}/reader-c3-traits.png` });
+  await page.getByRole("button", { name: "Suivant" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".card").first().click();
+  await page.getByRole("button", { name: "Suivant" }).click();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/reader-c4-file.png` });
+  await page.getByRole("button", { name: "Entrer dans la nuit" }).click();
+  await page.waitForTimeout(1500);
   await page.screenshot({ path: `${shots}/reader-2-scene.png` });
+  if (!(await page.locator(".scene").innerText()).includes("Léa")) errors.push("creation: the name is not in the text");
   // Two choices, then reload: the same page must come back.
   await page.locator(".choice").first().click();
   await page.waitForTimeout(600);
   await page.locator(".choice").first().click();
   await page.waitForTimeout(600);
+  await page.waitForTimeout(800);
   await page.screenshot({ path: `${shots}/reader-3-echo.png` });
+  // The character sheet.
+  await page.getByRole("button", { name: "Toi" }).click();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/reader-c5-sheet.png` });
+  await page.getByRole("button", { name: "Retour" }).click();
+  await page.waitForTimeout(300);
   const before = await page.locator(".scene").innerText();
   await page.reload();
   await page.waitForTimeout(800);
@@ -40,7 +71,7 @@ const server = http.createServer((req, res) => {
   if (before !== after) errors.push("resume: the scene differs after reload");
   for (let i = 0; i < 30 && (await page.locator(".choice").count()) > 0; i++) {
     await page.locator(".choice").last().click();
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(250);
   }
   await page.waitForTimeout(500);
   const ending = await page.locator(".ending h1").innerText().catch(() => "none");

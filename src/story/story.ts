@@ -31,6 +31,52 @@ export function chanceAtLeast(bonus: number, target: number): number {
   return ok / 36;
 }
 
+/** The player's character, chosen before the story starts. Part of the save. */
+export interface Hero {
+  readonly name: string;
+  /** 1 if the hero is a woman, 0 if a man. */
+  readonly fem: 0 | 1;
+  /** 1 if drawn to women, 0 if to men. */
+  readonly attire: 0 | 1;
+  readonly origin: string;
+  readonly flaw: string;
+  readonly traits: Readonly<Record<string, number>>;
+}
+
+/** Checks a hero against the pack's rules. Returns an error message, or null when valid. */
+export function heroError(pack: Pack, h: Hero): string | null {
+  const c = pack.creation;
+  if (!c) return null;
+  if (!/^[\p{L}][\p{L}' -]{0,23}$/u.test(h.name.trim())) return "prénom invalide (lettres, espaces, apostrophes, tirets ; 24 caractères au plus)";
+  if ((h.fem !== 0 && h.fem !== 1) || (h.attire !== 0 && h.attire !== 1)) return "genre invalide";
+  if (!c.origins.some((o) => o.id === h.origin)) return "origine inconnue";
+  if (!c.flaws.some((f) => f.id === h.flaw)) return "faille inconnue";
+  let sum = 0;
+  for (const t of c.traits) {
+    const v = h.traits[t] ?? 0;
+    if (!Number.isInteger(v) || v < 0 || v > c.max) return `valeur invalide pour ${t}`;
+    sum += v;
+  }
+  if (Object.keys(h.traits).some((k) => !c.traits.includes(k))) return "trait inconnu";
+  if (sum !== c.points) return `il faut répartir exactement ${c.points} points`;
+  return null;
+}
+
+/** A hero picked at random, for the validator and for quick tests. */
+export function randomHero(pack: Pack, rng: Rng): Hero | null {
+  const c = pack.creation;
+  if (!c) return null;
+  const traits: Record<string, number> = Object.fromEntries(c.traits.map((t) => [t, 0]));
+  for (let left = c.points, guard = 0; left > 0 && guard < 1000; guard++) {
+    const t = rng.pick(c.traits);
+    if ((traits[t] ?? 0) < c.max) {
+      traits[t] = (traits[t] ?? 0) + 1;
+      left--;
+    }
+  }
+  return { name: "Test", fem: rng.chance(0.5) ? 1 : 0, attire: rng.chance(0.5) ? 1 : 0, origin: rng.pick(c.origins).id, flaw: rng.pick(c.flaws).id, traits };
+}
+
 export class Story {
   readonly pack: Pack;
   readonly seed: string;
@@ -55,7 +101,9 @@ export class Story {
   private readonly dice: Rng;
   private readonly director: Rng;
 
-  constructor(pack: Pack, seed: string, lines: readonly string[] = []) {
+  readonly hero: Hero | null;
+
+  constructor(pack: Pack, seed: string, lines: readonly string[] = [], hero: Hero | null = null) {
     this.pack = pack;
     this.seed = seed;
     for (const s of pack.scenes) this.byId.set(s.id, s);
@@ -64,22 +112,45 @@ export class Story {
     const cast = rng.fork("cast");
     this.dice = rng.fork("dice");
     this.director = rng.fork("director");
+    if (pack.creation) {
+      const h = hero ?? randomHero(pack, rng.fork("hero"));
+      const err = h ? heroError(pack, h) : "personnage manquant";
+      if (err || !h) throw new Error(`personnage refusé : ${err}`);
+      this.hero = { ...h, name: h.name.trim() };
+    } else {
+      this.hero = null;
+    }
+    const fem = this.hero?.fem ?? 1;
+    const attire = this.hero?.attire ?? 0;
     // Each persona gets a name from their pool; two personas never share one.
     const taken = new Set<string>();
     for (const p of pack.personas) {
-      const free = p.names.filter((n) => !taken.has(n));
-      const name = cast.pick(free.length ? free : p.names);
+      const pf = p.follows === "joueur" ? fem : p.follows === "attirance" ? attire : -1;
+      const pool = pf === 1 ? p.namesF : pf === 0 ? p.namesM : p.names;
+      const free = pool.filter((n) => !taken.has(n));
+      const name = cast.pick(free.length ? free : pool);
       taken.add(name);
       this.names.set(p.id, name);
+      if (pf >= 0) this.vars.set(`${p.id}.fem`, pf);
     }
     this.lines = new Set(lines);
+    this.vars.set("fem", fem);
+    this.vars.set("attire", attire);
     this.apply(pack.init);
+    if (this.hero && pack.creation) {
+      for (const t of pack.creation.traits) this.vars.set(t, this.hero.traits[t] ?? 0);
+      const h = this.hero;
+      this.apply(pack.creation.origins.find((o) => o.id === h.origin)?.effects ?? []);
+      this.apply(pack.creation.flaws.find((f) => f.id === h.flaw)?.effects ?? []);
+      this.vars.set(`origine.${h.origin}`, 1);
+      this.vars.set(`faille.${h.flaw}`, 1);
+    }
     this.forced = pack.start;
     this.advance();
   }
 
-  static replay(pack: Pack, seed: string, log: readonly (number | readonly string[])[], lines: readonly string[] = []): Story {
-    const s = new Story(pack, seed, lines);
+  static replay(pack: Pack, seed: string, log: readonly (number | readonly string[])[], lines: readonly string[] = [], hero: Hero | null = null): Story {
+    const s = new Story(pack, seed, lines, hero);
     for (const c of log) {
       if (Array.isArray(c)) s.setLines(c as readonly string[]);
       else if (!s.choose(c as number)) throw new Error("cette sauvegarde ne se rejoue pas : elle a été modifiée ou vient d'une autre version du pack");
@@ -123,7 +194,15 @@ export class Story {
 
   /** Scene text with {persona} replaced by their name and {variable} by its value. */
   render(text: string): string {
-    return text.replace(/\{([\p{L}_][\p{L}\p{N}_.]*)\}/gu, (_, k: string) => this.names.get(k) ?? String(this.get(k)));
+    // {?fem:e|} picks the first form when the variable is non-zero: French agreements, pronouns.
+    // Innermost first, so a choice can sit inside another: {?faille.x:… {?fem:elle|il} …|}.
+    let t = text;
+    for (let i = 0; i < 4; i++) {
+      const next = t.replace(/\{\?([\p{L}_][\p{L}\p{N}_.]*):([^|{}]*)\|([^{}]*)\}/gu, (_, k: string, a: string, b: string) => (this.get(k) ? a : b));
+      if (next === t) break;
+      t = next;
+    }
+    return t.replace(/\{([\p{L}_][\p{L}\p{N}_.]*)\}/gu, (_, k: string) => (k === "moi" ? this.hero?.name ?? "" : this.names.get(k) ?? String(this.get(k))));
   }
 
   name(persona: string): string | undefined {
